@@ -173,13 +173,19 @@ async function openProfile(id) {
   const img = new Image();
   img.onload = () => {
     state.image = img;
-    fitImageToView();
-    recomputeTransform();
     $('profileScreen').hidden = true;
     $('mapScreen').hidden = false;
     $('mapTitle').textContent = p.name;
+    // canvasWrap is only measurable now that mapScreen is no longer [hidden] -
+    // must resize the canvas buffer AFTER it becomes visible, or it stays 0x0.
+    resizeCanvas();
+    fitImageToView();
+    recomputeTransform();
     setMode('none');
     draw();
+  };
+  img.onerror = () => {
+    alert('Could not load that image. Try a different photo (JPEG or PNG works best).');
   };
   img.src = url;
 }
