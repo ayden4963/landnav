@@ -48,6 +48,20 @@ function uuid() {
 
 // ---------- azimuth / declination helpers ----------
 function normAz(a) { return ((a % 360) + 360) % 360; }
+
+// Accepts either a full MGRS string ("18SUJ2347806483") or a short numeric-only
+// grid reference ("1403 7171" / "14037171") that relies on a remembered zone+100km-square prefix.
+function resolveMgrsInput(raw, profile) {
+  const s = raw.toUpperCase().replace(/\s+/g, '');
+  if (/^\d{1,2}[C-HJ-NP-X][A-Z]{2}\d+$/.test(s)) return s;
+  if (/^\d{2,10}$/.test(s) && s.length % 2 === 0) {
+    if (!profile.gridPrefix) {
+      throw new Error('No grid zone/square set for this map yet. Go to Settings and either type it in (e.g. 18SUJ) or tap "Detect From Current GPS Position" while standing on the map area - or enter one full coordinate here instead.');
+    }
+    return profile.gridPrefix + s;
+  }
+  throw new Error('Enter a full MGRS coordinate (e.g. 18SUJ2347806483) or a numeric grid reference with an even number of digits (e.g. 1403 7171).');
+}
 function gridAzimuthBetween(e1, n1, e2, n2) {
   const az = (Math.atan2(e2 - e1, n2 - n1) * 180) / Math.PI;
   return normAz(az);
@@ -162,7 +176,7 @@ $('newMapFileInput').addEventListener('change', async (e) => {
     const name = prompt('Name this map (e.g. "Blue Ridge East 1:24k")', file.name.replace(/\.[^.]+$/, '')) || 'Untitled Map';
     const profile = {
       id: uuid(), name, imageDataURL, controlPoints: [], waypoints: [],
-      declination: null, refZone: null, refHemisphere: null,
+      declination: null, refZone: null, refHemisphere: null, gridPrefix: null,
       createdAt: Date.now(), updatedAt: Date.now(),
     };
     await idbPut(profile);
@@ -183,7 +197,8 @@ $('importFileInput').addEventListener('change', async (e) => {
       id: uuid(), name: data.name + ' (imported)', imageDataURL: data.imageDataURL,
       controlPoints: data.controlPoints || [], waypoints: data.waypoints || [],
       declination: data.declination || null, refZone: data.refZone || null,
-      refHemisphere: data.refHemisphere || null, createdAt: Date.now(), updatedAt: Date.now(),
+      refHemisphere: data.refHemisphere || null, gridPrefix: data.gridPrefix || null,
+      createdAt: Date.now(), updatedAt: Date.now(),
     };
     await idbPut(profile);
     renderProfileList();
@@ -336,6 +351,11 @@ function draw() {
     const s = imageToScreen(px.x, px.y);
     drawLiveBlip(s.x, s.y);
   }
+  // pending placement awaiting confirmation
+  if (state.confirmTarget) {
+    const s = imageToScreen(state.confirmTarget.x, state.confirmTarget.y);
+    drawReticle(s.x, s.y, '#D2A02A', null);
+  }
   ctx.restore();
 }
 
@@ -403,11 +423,16 @@ requestAnimationFrame(animLoop);
 
 // ==================== pointer / gesture handling ====================
 let pointers = new Map();
-let gesture = { dragging: false, startScreen: null, startView: null, pinchStartDist: null, pinchStartScale: null };
+let gesture = { dragging: false, nudging: false, startScreen: null, startView: null, pinchStartDist: null, pinchStartScale: null };
 
 canvas.addEventListener('pointerdown', (e) => {
   canvas.setPointerCapture(e.pointerId);
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (state.confirmTarget && pointers.size === 1) {
+    gesture.nudging = true;
+    updateNudge(e);
+    return;
+  }
   if (pointers.size === 1) {
     gesture.dragging = true;
     gesture.startScreen = { x: e.clientX, y: e.clientY };
@@ -421,9 +446,17 @@ canvas.addEventListener('pointerdown', (e) => {
     gesture.pinchStartView = { ...state.view };
   }
 });
+function updateNudge(e) {
+  const rect = canvas.getBoundingClientRect();
+  const img = screenToImage(e.clientX - rect.left, e.clientY - rect.top);
+  state.confirmTarget = { x: img.x, y: img.y };
+  showMagnifier(e.clientX - rect.left, e.clientY - rect.top, img.x, img.y);
+  draw();
+}
 canvas.addEventListener('pointermove', (e) => {
   if (!pointers.has(e.pointerId)) return;
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (gesture.nudging && pointers.size === 1) { updateNudge(e); return; }
   if (pointers.size === 1 && gesture.dragging) {
     const dx = e.clientX - gesture.startScreen.x, dy = e.clientY - gesture.startScreen.y;
     if (Math.hypot(dx, dy) > 6) gesture.moved = true;
@@ -442,6 +475,13 @@ canvas.addEventListener('pointermove', (e) => {
   }
 });
 function endPointer(e) {
+  if (gesture.nudging) {
+    gesture.nudging = false;
+    pointers.delete(e.pointerId);
+    hideMagnifier();
+    draw();
+    return;
+  }
   const wasSingle = pointers.size === 1;
   const tapValid = wasSingle && gesture.dragging && !gesture.moved;
   pointers.delete(e.pointerId);
@@ -466,21 +506,86 @@ canvas.addEventListener('wheel', (e) => {
 
 // ==================== tap handling per mode ====================
 function handleTap(ix, iy) {
-  if (state.mode === 'calibrate') {
-    state.pendingCalibPixel = { px: ix, py: iy };
+  if (state.mode === 'waypoint' && !state.transform) { alert('Add at least 2 calibration points before placing waypoints.'); return; }
+  if (state.mode === 'measure' && !state.transform) { alert('Add at least 2 calibration points before measuring.'); return; }
+  if (state.mode === 'measure' && state.measurePoints.length >= 2) state.measurePoints = [];
+  if (['calibrate', 'waypoint', 'measure'].includes(state.mode)) {
+    beginPlacementConfirm(state.mode, ix, iy);
+  }
+}
+
+function beginPlacementConfirm(mode, ix, iy) {
+  state.confirmMode = mode;
+  state.confirmTarget = { x: ix, y: iy };
+  $('measurePanel').hidden = true;
+  $('livePanel').hidden = true;
+  $('waypointListPanel').hidden = true;
+  $('confirmBar').hidden = false;
+  const labels = { calibrate: 'Drag to adjust the control point, then confirm', waypoint: 'Drag to adjust the waypoint, then confirm', measure: 'Drag to adjust, then confirm' };
+  $('confirmBarLabel').textContent = labels[mode];
+  draw();
+}
+function cancelPlacementConfirm() {
+  state.confirmMode = null;
+  state.confirmTarget = null;
+  $('confirmBar').hidden = true;
+  hideMagnifier();
+  setMode(state.mode);
+  draw();
+}
+function finalizePlacementConfirm() {
+  const { x, y } = state.confirmTarget;
+  const mode = state.confirmMode;
+  state.confirmMode = null;
+  state.confirmTarget = null;
+  $('confirmBar').hidden = true;
+  hideMagnifier();
+  if (mode === 'calibrate') {
+    state.pendingCalibPixel = { px: x, py: y };
     openCalibModal();
-  } else if (state.mode === 'waypoint') {
-    if (!state.transform) { alert('Add at least 2 calibration points before placing waypoints.'); return; }
-    state.pendingWaypointPixel = { px: ix, py: iy };
+  } else if (mode === 'waypoint') {
+    state.pendingWaypointPixel = { px: x, py: y };
     openWaypointModal();
-  } else if (state.mode === 'measure') {
-    if (!state.transform) { alert('Add at least 2 calibration points before measuring.'); return; }
-    if (state.measurePoints.length >= 2) state.measurePoints = [];
-    state.measurePoints.push({ px: ix, py: iy });
+  } else if (mode === 'measure') {
+    state.measurePoints.push({ px: x, py: y });
     if (state.measurePoints.length === 2) showMeasurementResult();
     else $('measureHint').textContent = 'Tap the second point.';
   }
+  setMode(state.mode);
+  draw();
 }
+$('confirmCancelBtn').addEventListener('click', cancelPlacementConfirm);
+$('confirmPlaceBtn').addEventListener('click', finalizePlacementConfirm);
+
+function showMagnifier(screenX, screenY, imgX, imgY) {
+  const wrap = $('magnifierWrap');
+  wrap.hidden = false;
+  const bubbleSize = 140;
+  const wrapRect = $('canvasWrap').getBoundingClientRect();
+  let left = screenX - bubbleSize / 2;
+  let top = screenY - bubbleSize - 40;
+  left = Math.max(4, Math.min(left, wrapRect.width - bubbleSize - 4));
+  if (top < 4) top = screenY + 40;
+  wrap.style.left = left + 'px';
+  wrap.style.top = top + 'px';
+
+  const mctx = $('magnifierCanvas').getContext('2d');
+  mctx.clearRect(0, 0, bubbleSize, bubbleSize);
+  mctx.save();
+  mctx.beginPath(); mctx.arc(70, 70, 68, 0, Math.PI * 2); mctx.clip();
+  mctx.imageSmoothingEnabled = false;
+  if (state.image) {
+    const zoomFactor = 4;
+    const srcHalf = (bubbleSize / 2) / (state.view.scale * zoomFactor);
+    mctx.drawImage(state.image, imgX - srcHalf, imgY - srcHalf, srcHalf * 2, srcHalf * 2, 0, 0, bubbleSize, bubbleSize);
+  }
+  mctx.restore();
+  mctx.strokeStyle = '#D2A02A'; mctx.lineWidth = 1.5;
+  mctx.beginPath(); mctx.moveTo(70, 48); mctx.lineTo(70, 92); mctx.moveTo(48, 70); mctx.lineTo(92, 70); mctx.stroke();
+  mctx.strokeStyle = '#E7E3D3'; mctx.lineWidth = 2;
+  mctx.beginPath(); mctx.arc(70, 70, 68, 0, Math.PI * 2); mctx.stroke();
+}
+function hideMagnifier() { $('magnifierWrap').hidden = true; }
 
 // ==================== mode / toolbar ====================
 function setMode(mode) {
@@ -507,7 +612,12 @@ $('calibCancelBtn').addEventListener('click', () => { $('calibModal').hidden = t
 $('calibConfirmBtn').addEventListener('click', async () => {
   const raw = $('calibMgrsInput').value.trim();
   try {
-    const parsed = GeoConv.parseMGRS(raw);
+    const fullMgrs = resolveMgrsInput(raw, state.profile);
+    const parsed = GeoConv.parseMGRS(fullMgrs);
+    if (!state.profile.gridPrefix) {
+      const zoneStr = String(parsed.zone).padStart(2, '0');
+      state.profile.gridPrefix = zoneStr + parsed.band + parsed.sq;
+    }
     let refZone = state.profile.refZone, refHemisphere = state.profile.refHemisphere;
     let e = parsed.easting, n = parsed.northing;
     if (state.profile.controlPoints.length === 0) {
@@ -518,7 +628,7 @@ $('calibConfirmBtn').addEventListener('click', async () => {
       const utm = GeoConv.latLonToUTM(parsed.lat, parsed.lon, refZone);
       e = utm.easting; n = utm.northing;
     }
-    state.profile.controlPoints.push({ px: state.pendingCalibPixel.px, py: state.pendingCalibPixel.py, e, n, mgrs: raw.toUpperCase() });
+    state.profile.controlPoints.push({ px: state.pendingCalibPixel.px, py: state.pendingCalibPixel.py, e, n, mgrs: fullMgrs });
     recomputeTransform();
     await saveProfile();
     $('calibModal').hidden = true;
@@ -703,7 +813,36 @@ $('settingsBtn').addEventListener('click', () => {
   const decl = state.profile.declination;
   $('declValue').value = decl ? decl.value : '';
   $('declDir').value = decl ? decl.dir : 'W';
+  $('gridPrefixInput').value = state.profile.gridPrefix || '';
   $('settingsModal').hidden = false;
+});
+$('gridPrefixSaveBtn').addEventListener('click', async () => {
+  const v = $('gridPrefixInput').value.trim().toUpperCase();
+  if (v && !/^\d{1,2}[C-HJ-NP-X][A-Z]{2}$/.test(v)) {
+    alert('Grid prefix should look like a zone + band + 100km square, e.g. 18SUJ');
+    return;
+  }
+  state.profile.gridPrefix = v || null;
+  await saveProfile();
+  alert('Saved.');
+});
+$('gridPrefixGpsBtn').addEventListener('click', () => {
+  if (!navigator.geolocation) { alert('Geolocation not available on this device/browser.'); return; }
+  $('gridPrefixGpsBtn').textContent = 'Getting GPS fix\u2026';
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const mgrs = GeoConv.toMGRS(pos.coords.latitude, pos.coords.longitude);
+      const prefix = mgrs.slice(0, 5);
+      $('gridPrefixInput').value = prefix;
+      $('gridPrefixGpsBtn').textContent = 'Detect From Current GPS Position';
+      alert(`Detected ${prefix} (accuracy \u00B1${Math.round(pos.coords.accuracy)}m). Tap "Save Grid Prefix" to use it.\n\nMake sure you're standing within the area your map covers - this reads your current position, not the map's.`);
+    },
+    (err) => {
+      $('gridPrefixGpsBtn').textContent = 'Detect From Current GPS Position';
+      alert('Could not get a GPS fix: ' + err.message + '. Try again outdoors with a clear sky view - this can take longer with no cell/wifi assistance.');
+    },
+    { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 }
+  );
 });
 $('settingsCloseBtn').addEventListener('click', () => { $('settingsModal').hidden = true; });
 $('declSaveBtn').addEventListener('click', async () => {
@@ -726,6 +865,7 @@ $('exportMapBtn').addEventListener('click', () => {
     name: state.profile.name, imageDataURL: state.profile.imageDataURL,
     controlPoints: state.profile.controlPoints, waypoints: state.profile.waypoints,
     declination: state.profile.declination, refZone: state.profile.refZone, refHemisphere: state.profile.refHemisphere,
+    gridPrefix: state.profile.gridPrefix,
   };
   const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
   const a = document.createElement('a');
