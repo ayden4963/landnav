@@ -1,4 +1,4 @@
-const CACHE_NAME = 'landnav-v1';
+const CACHE_NAME = 'landnav-v2';
 const ASSETS = [
   './',
   './index.html',
