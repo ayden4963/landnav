@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0C0F0A">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="manifest" href="manifest.json">
+<title>Land Nav Plotter</title>
+<style>
+  :root {
+    --bg: #0C0F0A;
+    --panel: #1B2119;
+    --panel-2: #222A1D;
+    --olive: #5C6B3B;
+    --olive-light: #7A8C52;
+    --cream: #E7E3D3;
+    --amber: #D2A02A;
+    --red: #B3261E;
+    --blue: #3E7CB1;
+    --border: #33402A;
+    --mono: 'SFMono-Regular', Menlo, Consolas, 'Roboto Mono', monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; margin: 0; overscroll-behavior: none; }
+  body {
+    background: var(--bg); color: var(--cream); font-family: var(--sans);
+    display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+    padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
+  }
+  body.night-mode { --olive: #B3261E; --olive-light: #D8453A; --amber: #B3261E; --blue: #B3261E; --cream: #FF6B60; }
+  body.night-mode img, body.night-mode canvas { filter: grayscale(1) sepia(1) saturate(6) hue-rotate(-50deg) brightness(0.7); }
+
+  button { font-family: var(--sans); cursor: pointer; }
+  input, select, textarea { font-family: var(--sans); }
+
+  /* ---------- Profile screen ---------- */
+  #profileScreen { display: flex; flex-direction: column; height: 100%; padding: 20px 16px; }
+  .app-header { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
+  .app-header .reticle-mark { width: 30px; height: 30px; flex-shrink: 0; }
+  .app-header h1 { font-size: 17px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 700; margin: 0; }
+  .app-header .sub { font-size: 11px; color: #9AA085; font-family: var(--mono); margin-top: 2px; }
+  #profileList { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+  .profile-item { display: flex; align-items: center; background: var(--panel); border: 1px solid var(--border); padding: 12px 14px; }
+  .profile-item-main { flex: 1; cursor: pointer; }
+  .profile-name { font-weight: 600; font-size: 15px; }
+  .profile-meta { font-size: 12px; color: #9AA085; font-family: var(--mono); margin-top: 3px; }
+  .empty-hint { color: #7A8065; font-size: 13px; padding: 24px 4px; text-align: center; }
+  .btn-icon { background: none; border: none; color: #9AA085; font-size: 20px; width: 32px; height: 32px; }
+  .profile-actions { display: flex; gap: 10px; margin-top: 14px; }
+  .btn-primary {
+    flex: 1; background: var(--olive); color: var(--cream); border: none; padding: 13px;
+    font-weight: 700; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase;
+  }
+  .btn-secondary {
+    flex: 1; background: transparent; color: var(--cream); border: 1px solid var(--border); padding: 13px;
+    font-weight: 700; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase;
+  }
+
+  /* ---------- Map screen ---------- */
+  #mapScreen { display: flex; flex-direction: column; height: 100%; }
+  #statusBar {
+    display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--panel);
+    border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 12px;
+  }
+  #statusBar #mapTitle { flex: 1; font-family: var(--sans); font-weight: 700; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .calib-badge { padding: 3px 8px; border: 1px solid; font-size: 10.5px; letter-spacing: 0.03em; }
+  .calib-bad { color: var(--red); border-color: var(--red); }
+  .calib-warn { color: var(--amber); border-color: var(--amber); }
+  .calib-good { color: var(--olive-light); border-color: var(--olive-light); }
+
+  #canvasWrap { flex: 1; position: relative; overflow: hidden; background: var(--bg); touch-action: none; }
+  #mapCanvas { display: block; width: 100%; height: 100%; touch-action: none; }
+
+  #toolbar {
+    display: flex; background: var(--panel); border-top: 1px solid var(--border);
+    padding: 6px calc(4px + env(safe-area-inset-left)) calc(6px + env(safe-area-inset-bottom)) calc(4px + env(safe-area-inset-right));
+  }
+  .tool-btn {
+    flex: 1; background: none; border: none; color: #9AA085; padding: 8px 2px; font-size: 10.5px;
+    display: flex; flex-direction: column; align-items: center; gap: 4px; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600;
+  }
+  .tool-btn .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; opacity: 0.35; }
+  .tool-btn.active { color: var(--amber); }
+  .tool-btn.active .dot { opacity: 1; }
+
+  .side-panel {
+    position: absolute; bottom: 0; left: 0; right: 0; background: var(--panel-2);
+    border-top: 1px solid var(--border); padding: 14px; max-height: 45%; overflow-y: auto;
+  }
+  .readout-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .readout-row .label { color: #9AA085; }
+  .readout-row .value { font-family: var(--mono); font-weight: 600; }
+  .panel-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #9AA085; margin-bottom: 8px; }
+  .panel-actions { display: flex; gap: 8px; margin-top: 10px; }
+  .panel-actions button { flex: 1; padding: 10px; border: 1px solid var(--border); background: var(--panel); color: var(--cream); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+
+  /* ---------- Modals ---------- */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: flex-end;
+    justify-content: center; z-index: 100;
+  }
+  .modal-box { background: var(--panel); border-top: 1px solid var(--border); width: 100%; max-width: 480px; padding: 18px; padding-bottom: calc(18px + env(safe-area-inset-bottom)); }
+  .modal-box h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 14px; }
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 11px; color: #9AA085; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .field input[type=text], .field input[type=number], .field select, .field textarea {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--cream);
+    padding: 10px; font-size: 15px; font-family: var(--mono);
+  }
+  .field textarea { font-family: var(--sans); resize: vertical; min-height: 50px; }
+  .field-inline { display: flex; gap: 8px; }
+  .field-inline .field { flex: 1; }
+  .error-text { color: var(--red); font-size: 12px; min-height: 16px; margin-bottom: 8px; }
+  .hint-text { font-size: 12px; color: #7A8065; margin-bottom: 10px; line-height: 1.4; }
+  .modal-actions { display: flex; gap: 10px; margin-top: 6px; }
+  .coord-preview { font-family: var(--mono); font-size: 16px; color: var(--amber); background: var(--bg); padding: 10px; border: 1px solid var(--border); margin-bottom: 12px; text-align: center; letter-spacing: 0.04em; }
+
+  .settings-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .settings-row span { font-size: 14px; }
+
+  /* switch */
+  .switch { position: relative; width: 42px; height: 24px; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider-track { position: absolute; inset: 0; background: var(--border); cursor: pointer; }
+  .slider-track:before { content: ""; position: absolute; width: 18px; height: 18px; left: 3px; top: 3px; background: var(--cream); transition: 0.15s; }
+  .switch input:checked + .slider-track { background: var(--olive); }
+  .switch input:checked + .slider-track:before { transform: translateX(18px); }
+
+  [hidden] { display: none !important; }
+
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); }
+</style>
+</head>
+<body>
+
+<!-- ================= Profile / map-select screen ================= -->
+<div id="profileScreen">
+  <div class="app-header">
+    <svg class="reticle-mark" viewBox="0 0 40 40"><circle cx="20" cy="20" r="14" fill="none" stroke="#E7E3D3" stroke-width="2"/><line x1="20" y1="2" x2="20" y2="9" stroke="#5C6B3B" stroke-width="3"/><line x1="20" y1="31" x2="20" y2="38" stroke="#5C6B3B" stroke-width="3"/><line x1="2" y1="20" x2="9" y2="20" stroke="#5C6B3B" stroke-width="3"/><line x1="31" y1="20" x2="38" y2="20" stroke="#5C6B3B" stroke-width="3"/><line x1="20" y1="12" x2="20" y2="28" stroke="#E7E3D3" stroke-width="1.5"/><line x1="12" y1="20" x2="28" y2="20" stroke="#E7E3D3" stroke-width="1.5"/><circle cx="20" cy="20" r="2" fill="#D2A02A"/></svg>
+    <div>
+      <h1>Land Nav Plotter</h1>
+      <div class="sub">offline &middot; MGRS &middot; azimuth &middot; distance</div>
+    </div>
+  </div>
+  <div id="profileList"></div>
+  <div class="profile-actions">
+    <button class="btn-secondary" id="importBtn">Import</button>
+    <button class="btn-primary" id="newMapBtn">+ Add Map Photo</button>
+  </div>
+  <input type="file" id="newMapFileInput" accept="image/*" capture="environment" hidden>
+  <input type="file" id="importFileInput" accept=".json" hidden>
+</div>
+
+<!-- ================= Map / working screen ================= -->
+<div id="mapScreen" hidden>
+  <div id="statusBar">
+    <button class="btn-icon" id="backBtn">&larr;</button>
+    <div id="mapTitle">Map</div>
+    <div class="calib-badge calib-bad" id="calibBadge">Not calibrated</div>
+    <button class="btn-icon" id="settingsBtn">&#9881;</button>
+  </div>
+
+  <div id="canvasWrap">
+    <canvas id="mapCanvas"></canvas>
+
+    <div class="side-panel" id="measurePanel" hidden>
+      <div class="panel-title">Measure</div>
+      <div id="measureHint" class="hint-text">Tap the first point.</div>
+      <div class="readout-row"><span class="label">Distance</span><span class="value" id="measureDistance">&mdash;</span></div>
+      <div class="readout-row"><span class="label">Grid Azimuth</span><span class="value" id="measureGridAz">&mdash;</span></div>
+      <div class="readout-row"><span class="label">Magnetic Azimuth</span><span class="value" id="measureMagAz">&mdash;</span></div>
+      <div class="readout-row"><span class="label">Back Azimuth</span><span class="value" id="measureBackAz">&mdash;</span></div>
+      <div class="panel-actions"><button id="measureClearBtn">Clear</button></div>
+    </div>
+
+    <div class="side-panel" id="livePanel" hidden>
+      <div class="panel-title">Live Position (GPS works without cell signal)</div>
+      <div class="readout-row"><span class="label">Current MGRS</span><span class="value" id="liveMgrs">&mdash;</span></div>
+      <div class="panel-actions"><button id="liveGpsToggle">Start GPS</button></div>
+      <div class="panel-title" style="margin-top:12px;">Compass (needs HTTPS hosting)</div>
+      <div class="readout-row"><span class="label">Heading</span><span class="value" id="liveHeading">&mdash;</span></div>
+      <div class="panel-actions"><button id="liveCompassToggle">Enable Compass</button></div>
+    </div>
+
+    <div class="side-panel" id="waypointListPanel" hidden>
+      <div class="panel-title">Waypoints</div>
+      <div id="waypointListItems"></div>
+    </div>
+  </div>
+
+  <div id="toolbar">
+    <button class="tool-btn" id="mode-calibrate"><span class="dot"></span>Calibrate</button>
+    <button class="tool-btn" id="mode-waypoint"><span class="dot"></span>Waypoint</button>
+    <button class="tool-btn" id="mode-measure"><span class="dot"></span>Measure</button>
+    <button class="tool-btn" id="mode-live"><span class="dot"></span>Live</button>
+    <button class="tool-btn" id="waypointListBtn"><span class="dot"></span>List</button>
+    <button class="tool-btn" id="calibListBtn"><span class="dot"></span>Cal Pts</button>
+  </div>
+</div>
+
+<!-- ================= Calibration modal ================= -->
+<div class="modal-backdrop" id="calibModal" hidden>
+  <div class="modal-box">
+    <h2>Add Control Point</h2>
+    <div class="hint-text">Enter the exact MGRS coordinate of the point you tapped, read from your map's printed grid lines (zone + 100km square + easting/northing digits, e.g. <strong>18SUJ2347806483</strong>). Use 4+ well-spread points for best accuracy on a photographed map.</div>
+    <div class="field">
+      <label>MGRS Coordinate</label>
+      <input type="text" id="calibMgrsInput" placeholder="18SUJ2347806483" autocapitalize="characters">
+    </div>
+    <div class="error-text" id="calibError"></div>
+    <div class="modal-actions">
+      <button class="btn-secondary" id="calibCancelBtn">Cancel</button>
+      <button class="btn-primary" id="calibConfirmBtn">Add Point</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= Waypoint modal ================= -->
+<div class="modal-backdrop" id="waypointModal" hidden>
+  <div class="modal-box">
+    <h2>New Waypoint</h2>
+    <div class="coord-preview" id="waypointCoordPreview">&mdash;</div>
+    <div class="field">
+      <label>Name</label>
+      <input type="text" id="waypointName" placeholder="e.g. Rally Point 1">
+    </div>
+    <div class="field">
+      <label>Category</label>
+      <select id="waypointCategory"></select>
+    </div>
+    <div class="field">
+      <label>Notes (optional)</label>
+      <textarea id="waypointNotes"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-secondary" id="waypointCancelBtn">Cancel</button>
+      <button class="btn-primary" id="waypointConfirmBtn">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= Settings modal ================= -->
+<div class="modal-backdrop" id="settingsModal" hidden>
+  <div class="modal-box">
+    <h2>Settings</h2>
+    <div class="panel-title">Declination (G-M Angle)</div>
+    <div class="hint-text">Enter the G-M angle printed in your map's margin declination diagram &mdash; this is more accurate than a generic model, especially on older maps.</div>
+    <div class="field-inline">
+      <div class="field"><label>Angle (degrees)</label><input type="number" id="declValue" step="0.1" placeholder="e.g. 9.5"></div>
+      <div class="field"><label>Direction</label>
+        <select id="declDir"><option value="W">West</option><option value="E">East</option></select>
+      </div>
+    </div>
+    <button class="btn-primary" id="declSaveBtn" style="width:100%; margin-bottom:16px;">Save Declination</button>
+
+    <div class="settings-row"><span>Night mode (red display)</span>
+      <label class="switch"><input type="checkbox" id="nightModeToggle"><span class="slider-track"></span></label>
+    </div>
+    <div class="settings-row"><span>Rename this map</span><button class="btn-icon" id="renameMapBtn">&#9998;</button></div>
+    <div class="settings-row"><span>Export map + data (backup)</span><button class="btn-icon" id="exportMapBtn">&#8681;</button></div>
+
+    <div class="modal-actions" style="margin-top:16px;">
+      <button class="btn-primary" id="settingsCloseBtn" style="width:100%;">Close</button>
+    </div>
+  </div>
+</div>
+
+<script src="geo.js"></script>
+<script src="transform.js"></script>
+<script src="app.js"></script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  });
+}
+</script>
+</body>
+</html>
