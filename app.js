@@ -126,18 +126,50 @@ async function renderProfileList() {
 function escapeHTML(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
 $('newMapBtn').addEventListener('click', () => $('newMapFileInput').click());
+// Decode a freshly picked/captured photo, downscale if huge, and re-encode as a JPEG data URL.
+// Storing a data URL string (not a raw Blob/File) in IndexedDB sidesteps a known class of
+// Safari IndexedDB-Blob reliability issues, and re-encoding sidesteps any HEIC edge cases.
+function processImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const tempURL = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const maxDim = 3500;
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * scale));
+      const h = Math.max(1, Math.round(img.height * scale));
+      const off = document.createElement('canvas');
+      off.width = w; off.height = h;
+      off.getContext('2d').drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(tempURL);
+      try {
+        resolve(off.toDataURL('image/jpeg', 0.92));
+      } catch (err) {
+        reject(new Error('Could not process that photo: ' + err.message));
+      }
+    };
+    img.onerror = () => { URL.revokeObjectURL(tempURL); reject(new Error('Could not decode that photo. Try a different format (JPEG/PNG).')); };
+    img.src = tempURL;
+  });
+}
+
 $('newMapFileInput').addEventListener('change', async (e) => {
   const file = e.target.files[0];
-  if (!file) return;
-  const name = prompt('Name this map (e.g. "Blue Ridge East 1:24k")', file.name.replace(/\.[^.]+$/, '')) || 'Untitled Map';
-  const profile = {
-    id: uuid(), name, imageBlob: file, controlPoints: [], waypoints: [],
-    declination: null, refZone: null, refHemisphere: null,
-    createdAt: Date.now(), updatedAt: Date.now(),
-  };
-  await idbPut(profile);
   e.target.value = '';
-  openProfile(profile.id);
+  if (!file) return;
+  try {
+    const imageDataURL = await processImageFile(file);
+    const name = prompt('Name this map (e.g. "Blue Ridge East 1:24k")', file.name.replace(/\.[^.]+$/, '')) || 'Untitled Map';
+    const profile = {
+      id: uuid(), name, imageDataURL, controlPoints: [], waypoints: [],
+      declination: null, refZone: null, refHemisphere: null,
+      createdAt: Date.now(), updatedAt: Date.now(),
+    };
+    await idbPut(profile);
+    await openProfile(profile.id);
+  } catch (err) {
+    alert('Could not add that photo: ' + err.message);
+  }
 });
 
 $('importBtn').addEventListener('click', () => $('importFileInput').click());
@@ -147,9 +179,8 @@ $('importFileInput').addEventListener('change', async (e) => {
   try {
     const text = await file.text();
     const data = JSON.parse(text);
-    const blob = await (await fetch(data.imageDataURL)).blob();
     const profile = {
-      id: uuid(), name: data.name + ' (imported)', imageBlob: blob,
+      id: uuid(), name: data.name + ' (imported)', imageDataURL: data.imageDataURL,
       controlPoints: data.controlPoints || [], waypoints: data.waypoints || [],
       declination: data.declination || null, refZone: data.refZone || null,
       refHemisphere: data.refHemisphere || null, createdAt: Date.now(), updatedAt: Date.now(),
@@ -165,29 +196,32 @@ $('importFileInput').addEventListener('change', async (e) => {
 
 // ==================== Open a profile / map screen ====================
 async function openProfile(id) {
-  const profiles = await idbGetAll();
-  const p = profiles.find((x) => x.id === id);
-  if (!p) return;
-  state.profile = p;
-  const url = URL.createObjectURL(p.imageBlob);
-  const img = new Image();
-  img.onload = () => {
-    state.image = img;
-    $('profileScreen').hidden = true;
-    $('mapScreen').hidden = false;
-    $('mapTitle').textContent = p.name;
-    // canvasWrap is only measurable now that mapScreen is no longer [hidden] -
-    // must resize the canvas buffer AFTER it becomes visible, or it stays 0x0.
-    resizeCanvas();
-    fitImageToView();
-    recomputeTransform();
-    setMode('none');
-    draw();
-  };
-  img.onerror = () => {
-    alert('Could not load that image. Try a different photo (JPEG or PNG works best).');
-  };
-  img.src = url;
+  try {
+    const profiles = await idbGetAll();
+    const p = profiles.find((x) => x.id === id);
+    if (!p) { alert('Could not find that map (it may not have saved correctly).'); return; }
+    state.profile = p;
+    const img = new Image();
+    img.onload = () => {
+      state.image = img;
+      $('profileScreen').hidden = true;
+      $('mapScreen').hidden = false;
+      $('mapTitle').textContent = p.name;
+      // canvasWrap is only measurable now that mapScreen is no longer [hidden] -
+      // must resize the canvas buffer AFTER it becomes visible, or it stays 0x0.
+      resizeCanvas();
+      fitImageToView();
+      recomputeTransform();
+      setMode('none');
+      draw();
+    };
+    img.onerror = () => {
+      alert('Could not load the stored image for this map. Try deleting it and adding the photo again.');
+    };
+    img.src = p.imageDataURL;
+  } catch (err) {
+    alert('Error opening map: ' + err.message);
+  }
 }
 
 function backToProfiles() {
@@ -687,21 +721,17 @@ $('renameMapBtn').addEventListener('click', async () => {
   const name = prompt('Rename map', state.profile.name);
   if (name) { state.profile.name = name; await saveProfile(); $('mapTitle').textContent = name; }
 });
-$('exportMapBtn').addEventListener('click', async () => {
-  const reader = new FileReader();
-  reader.onload = () => {
-    const data = {
-      name: state.profile.name, imageDataURL: reader.result,
-      controlPoints: state.profile.controlPoints, waypoints: state.profile.waypoints,
-      declination: state.profile.declination, refZone: state.profile.refZone, refHemisphere: state.profile.refHemisphere,
-    };
-    const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = state.profile.name.replace(/[^a-z0-9]/gi, '_') + '.landnav.json';
-    a.click();
+$('exportMapBtn').addEventListener('click', () => {
+  const data = {
+    name: state.profile.name, imageDataURL: state.profile.imageDataURL,
+    controlPoints: state.profile.controlPoints, waypoints: state.profile.waypoints,
+    declination: state.profile.declination, refZone: state.profile.refZone, refHemisphere: state.profile.refHemisphere,
   };
-  reader.readAsDataURL(state.profile.imageBlob);
+  const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = state.profile.name.replace(/[^a-z0-9]/gi, '_') + '.landnav.json';
+  a.click();
 });
 
 // ==================== boot ====================
