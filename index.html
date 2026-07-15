@@ -132,6 +132,22 @@
 
   [hidden] { display: none !important; }
 
+  #confirmBar {
+    position: absolute; left: 0; right: 0; bottom: 0; background: var(--panel-2);
+    border-top: 2px solid var(--amber); padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; z-index: 20;
+  }
+  #confirmBar span { font-size: 12.5px; color: var(--cream); }
+  .confirm-actions { display: flex; gap: 8px; flex-shrink: 0; }
+  .confirm-actions button { padding: 9px 14px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; border: 1px solid var(--border); background: var(--bg); color: var(--cream); }
+  #confirmPlaceBtn { background: var(--olive); border-color: var(--olive); }
+
+  #magnifierWrap {
+    position: absolute; width: 140px; height: 140px; pointer-events: none; z-index: 30;
+    filter: drop-shadow(0 2px 8px rgba(0,0,0,0.6));
+  }
+  #magnifierCanvas { width: 140px; height: 140px; border-radius: 50%; background: var(--bg); }
+
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-thumb { background: var(--border); }
 </style>
@@ -191,6 +207,18 @@
       <div class="panel-title">Waypoints</div>
       <div id="waypointListItems"></div>
     </div>
+
+    <div id="confirmBar" hidden>
+      <span id="confirmBarLabel">Adjust point, then confirm</span>
+      <div class="confirm-actions">
+        <button id="confirmCancelBtn">Cancel</button>
+        <button id="confirmPlaceBtn">Place Point</button>
+      </div>
+    </div>
+
+    <div id="magnifierWrap" hidden>
+      <canvas id="magnifierCanvas" width="140" height="140"></canvas>
+    </div>
   </div>
 
   <div id="toolbar">
@@ -207,7 +235,7 @@
 <div class="modal-backdrop" id="calibModal" hidden>
   <div class="modal-box">
     <h2>Add Control Point</h2>
-    <div class="hint-text">Enter the exact MGRS coordinate of the point you tapped, read from your map's printed grid lines (zone + 100km square + easting/northing digits, e.g. <strong>18SUJ2347806483</strong>). Use 4+ well-spread points for best accuracy on a photographed map.</div>
+    <div class="hint-text">Enter the MGRS coordinate of the point you tapped, read from your map's printed grid lines. If you only ever get short numeric grid references (e.g. <strong>1403 7171</strong>), set this map's zone/square once in Settings first (type it in, or detect it from GPS) - then every point can use the short form. Use 4+ well-spread points for best accuracy on a photographed map.</div>
     <div class="field">
       <label>MGRS Coordinate</label>
       <input type="text" id="calibMgrsInput" placeholder="18SUJ2347806483" autocapitalize="characters">
@@ -248,6 +276,14 @@
 <div class="modal-backdrop" id="settingsModal" hidden>
   <div class="modal-box">
     <h2>Settings</h2>
+    <div class="panel-title">Map Grid Zone / 100km Square</div>
+    <div class="hint-text">Set once so you can enter short numeric grid references (e.g. "1403 7171") for calibration points and don't have to retype the zone/square every time. Auto-fills from your first full coordinate, or detect it directly from GPS below (GPS needs satellite lock only, not cell signal or wifi).</div>
+    <div class="field"><input type="text" id="gridPrefixInput" placeholder="e.g. 18SUJ" autocapitalize="characters"></div>
+    <div class="panel-actions" style="margin-bottom:10px;">
+      <button id="gridPrefixGpsBtn">Detect From Current GPS Position</button>
+    </div>
+    <button class="btn-primary" id="gridPrefixSaveBtn" style="width:100%; margin-bottom:16px;">Save Grid Prefix</button>
+
     <div class="panel-title">Declination (G-M Angle)</div>
     <div class="hint-text">Enter the G-M angle printed in your map's margin declination diagram &mdash; this is more accurate than a generic model, especially on older maps.</div>
     <div class="field-inline">
